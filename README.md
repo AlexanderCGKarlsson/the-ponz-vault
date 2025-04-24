@@ -59,7 +59,7 @@ forge build
 ```
 
 ###  Environment Setup
-copy the example ènv.example`and fill in your values.
+copy the example `Env.example`and fill in your values.
 
 ``` bash
 cp .env.example .env
@@ -109,3 +109,15 @@ Run the whole test suite
 make test
 ```
 
+## Technical Implementation
+
+The Ponz Vault is implemented as a Solidity smart contract with the following key components:
+
+- **ReentrancyGuard**: Prevents reentrancy attacks during prize distribution
+- **Ownable**: Restricts treasury withdrawals to the contract owner
+- **IERC20 Integration**: Works with any USDC token on the Base network
+- **State Management**: Tracks current winner, deposit amounts, and time remaining
+
+## Disclaimer
+
+This is a gambling game. You have a high probability of losing your money, participate at your own risk. There is no guarantee of winning, and you may lose your deposited funds. 

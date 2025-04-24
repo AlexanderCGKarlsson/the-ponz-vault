@@ -2,6 +2,7 @@
 
 pragma solidity ^0.8.24;
 
+import {SafeERC20} from "@openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin-contracts/utils/ReentrancyGuard.sol";
@@ -14,10 +15,12 @@ import {ReentrancyGuard} from "@openzeppelin-contracts/utils/ReentrancyGuard.sol
  * @notice As the s_lastAmount increases the more the treasury will get, it is working as intended in the design.
  * @notice It's another game within the game once the countdown reaches 0 that the s_currentWinningPlayer calls the `performVaultWinner()` function to claim their prize (other may do it for them too).
  * If left snoozing others can deposit and restart the clock. 
- * @dev we currently using an enm VaultStatus (open / closed) it's with conscience that its left in for future upgrades to the contract.
+ * @dev we currently using an enm VaultStatus (open / closed) it's with conscience that its left in open state and can be implemented with closed for future upgrades to the contract.
  */
 
 contract Vault is Ownable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+    
     /* Errors */
     error Vault__DepositFailed();
     error Vault__AmountNeedsToBeMoreThanLastDepositor();
@@ -30,6 +33,7 @@ contract Vault is Ownable, ReentrancyGuard {
     error Vault__ZeroEthDonation();
     error Vault__InvalidUsdcTokenAddress();
     error Vault__EthTransferFailed();
+    error Vault__MessageTooLong();
 
     /* type declarations */
     enum VaultStatus {
@@ -46,12 +50,12 @@ contract Vault is Ownable, ReentrancyGuard {
     uint256 private s_treasury;
     address private s_currentWinningPlayer;
     address private s_winner;
-    address private immutable i_usdcTokenAddress;
+    IERC20 private immutable i_usdcTokenAddress;
     uint256 private immutable i_timeInterval;
 
     VaultStatus private s_vaultStatus;
 
-    event VaultDepositor(address indexed user, uint256 indexed amount);
+    event VaultDepositor(address indexed user, uint256 indexed amount, string message);
     event VaultWinner(address indexed winner, uint256 indexed amount);
     event FeeCollected(uint256 fee);
     event EthDonation(address indexed donor, uint256 amount);
@@ -61,7 +65,7 @@ contract Vault is Ownable, ReentrancyGuard {
     ) Ownable (msg.sender) {
         if (_usdcTokenAddress == address(0)) revert Vault__InvalidUsdcTokenAddress();
         i_VaultFee = _vaultFee; // fee in basis points (example: 50 = 0.5%)
-        i_usdcTokenAddress = _usdcTokenAddress;
+        i_usdcTokenAddress = IERC20(_usdcTokenAddress);
         s_vaultStatus = VaultStatus.OPEN;
         i_timeInterval = _timeInterval;
     }
@@ -69,20 +73,23 @@ contract Vault is Ownable, ReentrancyGuard {
     /**
      * @notice Allows user to deposit USDC into the vault
      * @param _amount Amount of USDC to deposit
+     * @dev The same user can technically deposit again without rejection.
      * @dev Must be grater than the last deposit. Fee is calculated and added to treasury.
      * @dev Fee Calculation: amount * fee_basis_points / 10000
      * For example: 100 usdc with a 0.4% fee (40 basis points)
      * Fee = 100 * 40 / 10000 = 0.4 USDC
-     * @dev it's possible nonReentrant is not needed here due to us not extracting from the smart contract,
-     * but Slither is complaining about it. 
      */
-    function depositVault(uint256 _amount) external nonReentrant {
+    function depositVault(uint256 _amount, string calldata _message) external {
         if (_amount <= s_lastAmount) {
             revert Vault__AmountNeedsToBeMoreThanLastDepositor();
         }
         if (s_vaultStatus != VaultStatus.OPEN) {
             revert Vault__DepositingIsNotOpen();
         }
+
+        // Message will be restricted to 140 in length.
+        if (bytes(_message).length > 140) revert Vault__MessageTooLong();
+
         /* @dev Calculate the fee (i_VaultFee is in basis points, 1 basis point = 0.01%) */
         uint256 feeAmount = (_amount * i_VaultFee) / FEE_PRECISION;
 
@@ -92,20 +99,23 @@ contract Vault is Ownable, ReentrancyGuard {
         s_lastAmount = _amount;
         s_lastTimeStamp = block.timestamp;
 
-        bool success = IERC20(i_usdcTokenAddress).transferFrom(msg.sender, address(this), _amount);
-        if (!success) {
-            revert Vault__DepositFailed();
-        }
+        i_usdcTokenAddress.safeTransferFrom(msg.sender, address(this), _amount);
 
-        emit VaultDepositor(msg.sender, _amount);
+        emit VaultDepositor(msg.sender, _amount, _message);
     }
 
-    function checkIfVaultWinnerIsDecided() public view returns (bool upkeepNeeded) {
+    /**
+     * @dev - The function will be called to the chainlink nodes to check if the vault winner is ready to be called.
+     * @return upkeepNeeded - true if `performVaultWinner` can be called.
+     * @return performData - Is the data that will be passed to the function when `performVaultWinner`is called
+     */
+
+    function checkUpkeep(bytes memory /* checkData */) public view returns (bool upkeepNeeded, bytes memory /* performData */) {
         bool deadlineHasPassed = ((block.timestamp - s_lastTimeStamp) >= i_timeInterval);
         bool vaultIsOpen = s_vaultStatus == VaultStatus.OPEN;
         bool hasBalance = IERC20(i_usdcTokenAddress).balanceOf(address(this)) > 0;
         upkeepNeeded = (deadlineHasPassed && vaultIsOpen && hasBalance);
-        return(upkeepNeeded);
+        return(upkeepNeeded, "");
     }
 
     /**
@@ -114,32 +124,34 @@ contract Vault is Ownable, ReentrancyGuard {
      * @dev Follows CEI: Checks, effects, interactions.
      */
 
-    function performVaultWinner() external nonReentrant {
+    function performVaultWinner(bytes calldata /* performData */) external nonReentrant {
         // Checking if Vault Winner can be decided. 
-        (bool upKeepNeeded) = checkIfVaultWinnerIsDecided();
+        (bool upKeepNeeded, ) = checkUpkeep("");
         if (!upKeepNeeded) {
             revert Vault__PickingVaultWinnerIsNotNeeded(address(this).balance, s_lastTimeStamp, uint256(s_vaultStatus));
         }
 
+        // Set the effects.
+        s_winner = s_currentWinningPlayer;
+        s_lastTimeStamp = block.timestamp;
+        s_lastAmount = 0;
 
+        /*
+        * // s_vaultStatus = VaultStatus.CLOSED;
+        * @dev: This can be implemented if we will use open / close in two different functions.
+        * As of now with how the contract looks it does not make sense to have it open and close within the same function.
+        */
 
         // Calculate Vault price before changing state
         uint256 totalBalance = IERC20(i_usdcTokenAddress).balanceOf(address(this));
         uint256 pricePool = totalBalance - s_treasury;
-
-        // Set the effects.
-        s_winner = s_currentWinningPlayer;
-        s_vaultStatus = VaultStatus.CLOSED;
-        s_lastTimeStamp = block.timestamp;
-        s_lastAmount = 0;
-
 
         bool success = IERC20(i_usdcTokenAddress).transfer(s_winner, pricePool);
         if (!success) {
             revert Vault__TransferFailed();
         }
 
-        s_vaultStatus = VaultStatus.OPEN;
+        // s_vaultStatus = VaultStatus.OPEN;
 
         emit VaultWinner(s_winner, pricePool);
     }
@@ -147,9 +159,8 @@ contract Vault is Ownable, ReentrancyGuard {
     /**
      * @notice Allows the owner to withdraw accumulated fees
      * @dev Withdraws both USDC fees and any ETH donations.
-     * @dev nonReentrant might not be needed here but added in as Slither points it out and because of state variables changes.
      */
-    function withDrawToTreasury() external onlyOwner nonReentrant {
+    function withDrawToTreasury() external onlyOwner {
         uint256 treasuryValue = s_treasury;
         if (treasuryValue == 0) {
             revert Vault__TreasuryIsEmpty(treasuryValue);
@@ -246,7 +257,7 @@ contract Vault is Ownable, ReentrancyGuard {
         return i_timeInterval;
     }
 
-    function getUsdcAddress() external view returns (address) {
+    function getUsdcAddress() external view returns (IERC20) {
         return i_usdcTokenAddress;
     }
 
@@ -260,6 +271,7 @@ contract Vault is Ownable, ReentrancyGuard {
 
     // Helper Function
     function isWinnerDecidable() external view returns (bool) {
-        return checkIfVaultWinnerIsDecided();
+        (bool upkeepNeeded, ) = checkUpkeep("");
+        return upkeepNeeded;
     }
 }

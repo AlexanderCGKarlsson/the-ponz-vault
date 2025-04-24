@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 
 import {Test, console} from "forge-std/Test.sol";
 import {Vault} from "src/ThePonzVault.sol";
+import {SafeERC20} from "@openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC20} from "@openzeppelin-contracts/interfaces/IERC20.sol";
 import {USDCToken} from "test/mocks/USDCToken.sol";
 import {HelperConfig} from "script/HelperConfig.s.sol";
@@ -13,10 +14,12 @@ import {Vm} from "forge-std/Vm.sol";
 import {Ownable} from "@openzeppelin-contracts/access/Ownable.sol";
 
 contract ThePonzVaultTest is Test {
+    using SafeERC20 for IERC20;
+
     Vault public vault;
     HelperConfig public helperConfig;
 
-    address usdcTokenAddress;
+    IERC20 usdcTokenAddress;
     address public PLAYER_ONE = makeAddr("player_one");
     address public PLAYER_TWO = makeAddr("player_two");
     uint256 public constant STARTING_BALANCE = 5 ether;
@@ -24,6 +27,7 @@ contract ThePonzVaultTest is Test {
     uint256 public constant DECIMALS_PRECISION = 1e6;
     uint256 private constant FEE_PRECISION = 10000;
     uint256 public constant VAULT_FEE = VaultConstants.VAULT_FEE_BASIS_POINTS;
+    string public constant message = "Testing message";
     
 
     function setUp() external {
@@ -32,8 +36,8 @@ contract ThePonzVaultTest is Test {
         usdcTokenAddress = vault.getUsdcAddress();
 
         // Mint USDC to players
-        USDCToken(usdcTokenAddress).mint(PLAYER_ONE, 1000 * DECIMALS_PRECISION);
-        USDCToken(usdcTokenAddress).mint(PLAYER_TWO, 1000 * DECIMALS_PRECISION); 
+        USDCToken(address(usdcTokenAddress)).mint(PLAYER_ONE, 1000 * DECIMALS_PRECISION);
+        USDCToken(address(usdcTokenAddress)).mint(PLAYER_TWO, 1000 * DECIMALS_PRECISION); 
         
 
         // Dealing some ETH to players
@@ -55,7 +59,7 @@ contract ThePonzVaultTest is Test {
         // Approve the vault to spend USDC
         IERC20(usdcTokenAddress).approve(address(vault), amount);
         console.log("Player one's USDC Balance", IERC20(usdcTokenAddress).balanceOf(PLAYER_ONE));
-        vault.depositVault(amount);
+        vault.depositVault(amount, message);
         console.log("Player one's USDC Balance After", IERC20(usdcTokenAddress).balanceOf(PLAYER_ONE));
         vm.stopPrank();
     }
@@ -67,13 +71,13 @@ contract ThePonzVaultTest is Test {
 
         // Approve the vault to spend USDC
         IERC20(usdcTokenAddress).approve(address(vault), amount);
-        vault.depositVault(amount);
+        vault.depositVault(amount, message);
         vm.stopPrank();
         // Prank player two
         vm.startPrank(PLAYER_TWO);
         // Approve for player two
         IERC20(usdcTokenAddress).approve(address(vault), amount + 1);
-        vault.depositVault(amount + 1);
+        vault.depositVault(amount + 1, message);
     }
 
 
@@ -83,7 +87,7 @@ contract ThePonzVaultTest is Test {
         IERC20(usdcTokenAddress).approve(address(vault), amount);
         console.log("Player one deposits amount: ", amount);
         // Deposits into the vault
-        vault.depositVault(amount);
+        vault.depositVault(amount, message);
         vm.stopPrank();
         // Prank the second player
         vm.startPrank(PLAYER_TWO);
@@ -91,7 +95,7 @@ contract ThePonzVaultTest is Test {
         vm.expectRevert(
             Vault.Vault__AmountNeedsToBeMoreThanLastDepositor.selector);
         console.log("Player two deposits amount ", amount);
-        vault.depositVault(amount);
+        vault.depositVault(amount, message);
     }
 
     function testDepositAndGetCurrentWinningPlayerAndLastAmount() public {
@@ -100,7 +104,7 @@ contract ThePonzVaultTest is Test {
         vm.startPrank(PLAYER_ONE);
         IERC20(usdcTokenAddress).approve(address(vault), balance);
         uint256 depositAmount = balance - 99;
-        vault.depositVault(depositAmount);
+        vault.depositVault(depositAmount, message);
         address currentWinningPlayer = vault.getCurrentWinningPlayer();
         vm.stopPrank();
         assertEq(currentWinningPlayer, PLAYER_ONE);
@@ -112,7 +116,7 @@ contract ThePonzVaultTest is Test {
         
         IERC20(usdcTokenAddress).approve(address(vault), balance);
         // @dev we do -99 as if we do balance, we will get hit with the revert because we deposit the same amount in PLAYER_TWO deposit.
-        vault.depositVault(balance - 99);
+        vault.depositVault(balance - 99, message);
         address currentWinningPlayer = vault.getCurrentWinningPlayer();
         assertEq(currentWinningPlayer, PLAYER_ONE);
         vm.stopPrank();
@@ -122,7 +126,7 @@ contract ThePonzVaultTest is Test {
 
         // @dev: We can use `balance` here too as we mint the same amount USDC to both users.
         IERC20(usdcTokenAddress).approve(address(vault), balance);
-        vault.depositVault(balance);
+        vault.depositVault(balance, message);
         assertEq(vault.getCurrentWinningPlayer(), PLAYER_TWO);
     }
 
@@ -131,7 +135,7 @@ contract ThePonzVaultTest is Test {
         vm.startPrank(PLAYER_ONE);
         
         IERC20(usdcTokenAddress).approve(address(vault), balance);
-        vault.depositVault(100);
+        vault.depositVault(100, message);
         vm.stopPrank();
 
         // Warp time
@@ -142,7 +146,7 @@ contract ThePonzVaultTest is Test {
         vm.startPrank(PLAYER_TWO);
 
         IERC20(usdcTokenAddress).approve(address(vault), balance);
-        vault.depositVault(101); // one more than player 1 deposit, the time should then be reset.
+        vault.depositVault(101, message); // one more than player 1 deposit, the time should then be reset.
         assert(vault.getTimeRemaining() <= 3600);
         uint256 balanceAfterDeposit = IERC20(usdcTokenAddress).balanceOf(PLAYER_TWO);
 
@@ -159,16 +163,34 @@ contract ThePonzVaultTest is Test {
         assertEq(timeRemaining, 0);
 
         // Call the claim.
-        bool readyForClaim = vault.checkIfVaultWinnerIsDecided();
+        (bool readyForClaim, ) = vault.checkUpkeep("");
         assertEq(readyForClaim, true);
         uint256 pricePool = vault.getCurrentVaultPool();
         
         // perform the transfer
-        vault.performVaultWinner();
+        vault.performVaultWinner("");
         vm.stopPrank();
 
         // Assert for player two.
         assertEq(pricePool + balanceAfterDeposit, IERC20(usdcTokenAddress).balanceOf(PLAYER_TWO));
+    }
+
+    function testDepositWithMessage() public {
+        uint256 balance = IERC20(usdcTokenAddress).balanceOf(PLAYER_ONE);
+        vm.startPrank(PLAYER_ONE);
+        
+        IERC20(usdcTokenAddress).approve(address(vault), balance);
+        vm.recordLogs();
+        vault.depositVault(100, message);
+        vm.stopPrank();
+
+        
+        Vm.Log[] memory entries = vm.getRecordedLogs();
+        
+
+        // Get the message from the logs and decode it.
+        string memory emittedMessage = abi.decode(entries[1].data, (string));
+        assertEq(emittedMessage, message);
     }
 
     /* Fee & payout testing */
@@ -179,7 +201,7 @@ contract ThePonzVaultTest is Test {
 
         // Approve the vault to spend USDC
         IERC20(usdcTokenAddress).approve(address(vault), amount);
-        vault.depositVault(amount);
+        vault.depositVault(amount, message);
 
         // Get the vault fee from the contract
         uint256 vaultFee = vault.getVaultFee();
@@ -222,14 +244,21 @@ contract ThePonzVaultTest is Test {
     }
 
     function testZeroSendEthToContractAsDonation() public {
-        
+        vm.startPrank(PLAYER_ONE);
+
+
+        // Send Eth
+        vm.recordLogs();
+        vm.expectRevert(Vault.Vault__ZeroEthDonation.selector);
+        (bool success, ) = address(vault).call{value: 0}("");
+        vm.stopPrank();
     }
 
     function testWithdrawToTreasury(uint256 amount) public {
         amount = bound(amount, 1e5, 100 * DECIMALS_PRECISION);
         vm.startPrank(PLAYER_ONE);
         IERC20(usdcTokenAddress).approve(address(vault), amount);
-        vault.depositVault(amount);
+        vault.depositVault(amount, message);
         (bool success, ) = address(vault).call{value: amount}("");
         vm.stopPrank();
 
@@ -260,7 +289,7 @@ contract ThePonzVaultTest is Test {
     function testOnlyOnlyOwnerCanWithdraw() public {
         vm.startPrank(PLAYER_ONE);
         IERC20(usdcTokenAddress).approve(address(vault), 99);
-        vault.depositVault(99);
+        vault.depositVault(99, message);
         (bool success, ) = address(vault).call{value: 99}("");
         vm.stopPrank();
 
@@ -275,14 +304,26 @@ contract ThePonzVaultTest is Test {
         uint256 depositAmount = 1000 * 1e6; // 1000 USDC
         vm.startPrank(PLAYER_ONE);
         IERC20(usdcTokenAddress).approve(address(vault), depositAmount);
-        vault.depositVault(depositAmount);
+        vault.depositVault(depositAmount, message);
+        uint256 expectedFee = (depositAmount * VAULT_FEE) / 10000;
 
-        console.log("Vault's fee", vault.getVaultFee());
+        console.log("Vault's fee in basis points", vault.getVaultFee());
+        console.log("The treasury balance", vault.getTreasuryBalance());
+        console.log("Expected fee", expectedFee);
 
-        uint256 expectedFee = (depositAmount * VAULT_FEE) / 10000; // This should be 4 usdc.
+        
         assertEq(vault.getTreasuryBalance(), expectedFee);
-        assertEq(expectedFee, 4 * 1e6, "Fee should be 4 USDC");
+        assertEq(expectedFee, 10 * 1e6, "Fee should be 10 USDC");
         vm.stopPrank();
+    }
+
+    function testMessageTooLong() public {
+        uint256 depositAmount = 1000 * 1e6; // 1000 USDC
+        string memory messageFailure = "Did you know that honey never spoils? Archaeologists have found pots of honey in ancient Egyptian tombs that are over 3,000 years old and still perfectly edible.";
+        vm.startPrank(PLAYER_ONE);
+        IERC20(usdcTokenAddress).approve(address(vault), depositAmount);
+        vm.expectRevert(Vault.Vault__MessageTooLong.selector);
+        vault.depositVault(depositAmount, messageFailure);
     }
 
     function testFallBackReverts() public {
@@ -330,7 +371,7 @@ contract ThePonzVaultTest is Test {
         
         IERC20(usdcTokenAddress).approve(address(vault), balance);
         uint256 expectedTimeStamp = block.timestamp;
-        vault.depositVault(100);
+        vault.depositVault(100, message);
         vm.stopPrank();
         uint256 lastTimeStamp = vault.getLastTimeStamp();
         assertEq(expectedTimeStamp, lastTimeStamp);
@@ -341,11 +382,11 @@ contract ThePonzVaultTest is Test {
         vm.startPrank(PLAYER_ONE);
         
         IERC20(usdcTokenAddress).approve(address(vault), balance);
-        vault.depositVault(100);
+        vault.depositVault(100, message);
 
         // Warp the time
         vm.warp(block.timestamp + 60 minutes);
-        vault.performVaultWinner();
+        vault.performVaultWinner("");
         vm.stopPrank();
 
         address recentWinner = vault.getRecentVaultWinner();
@@ -360,13 +401,13 @@ contract ThePonzVaultTest is Test {
         vm.startPrank(PLAYER_ONE);
         
         IERC20(usdcTokenAddress).approve(address(vault), balance);
-        vault.depositVault(100);
+        vault.depositVault(100, message);
         vm.stopPrank();
 
         // Warp time
         vm.warp(block.timestamp + 60 minutes);
 
-        bool checkVaultWinner = vault.checkIfVaultWinnerIsDecided();
+        (bool checkVaultWinner, ) = vault.checkUpkeep("");
         assertTrue(checkVaultWinner);
     }
 
@@ -376,7 +417,7 @@ contract ThePonzVaultTest is Test {
         uint256 expectedDecimals = 6;
 
         
-        uint256 decimals = USDCToken(usdcTokenAddress).decimals();
+        uint256 decimals = USDCToken(address(usdcTokenAddress)).decimals();
         assertEq(expectedDecimals, decimals);
     }
 
@@ -384,25 +425,22 @@ contract ThePonzVaultTest is Test {
         address PLAYER_THREE = makeAddr("player_three");
         vm.deal(PLAYER_THREE, 3 ether);
         vm.startPrank(PLAYER_THREE);
-        USDCToken(usdcTokenAddress).mint(PLAYER_THREE, 100);
+        USDCToken(address(usdcTokenAddress)).mint(PLAYER_THREE, 100);
         assertEq(IERC20(usdcTokenAddress).balanceOf(PLAYER_THREE), 100);
     }
 
     function testUsdcMockTransferAndCallWithEvent() public {
-        uint256 balance = IERC20(usdcTokenAddress).balanceOf(PLAYER_TWO);
         uint256 transferAmount = 100;
         bytes memory data = abi.encode("This is a test");
 
         vm.startPrank(PLAYER_ONE);
         // IERC20(usdcTokenAddress).approve(address(PLAYER_TWO), balance);
-        bool success = USDCToken(usdcTokenAddress).transferAndCall(
+        bool success = USDCToken(address(usdcTokenAddress)).transferAndCall(
             PLAYER_TWO,
             transferAmount, 
             data
         );
         vm.stopPrank();
-        vm.recordLogs();
-        Vm.Log[] memory entries = vm.getRecordedLogs();
 
         // Assert
         assertTrue(success);
