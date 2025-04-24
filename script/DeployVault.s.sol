@@ -6,12 +6,12 @@ import {Script} from "forge-std/Script.sol";
 import {Vault} from "src/ThePonzVault.sol";
 import {HelperConfig} from "script/HelperConfig.s.sol";
 import {console2} from "forge-std/console2.sol";
+import {VaultConstants} from "src/libraries/VaultConstants.sol";
 
 contract DeployVault is Script {
 
-    uint256 public constant VAULT_FEE_BASIS_POINT = 100;
-    uint256 public constant TIME_INTERVAL = 60 minutes;
-    
+    uint256 public constant VAULT_FEE_BASIS_POINT = VaultConstants.VAULT_FEE_BASIS_POINTS;
+    uint256 public constant TIME_INTERVAL = VaultConstants.TIME_INTERVAL;
 
     function run() public {
         deployContract();
