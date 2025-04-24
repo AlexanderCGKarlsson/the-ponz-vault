@@ -143,13 +143,10 @@ contract Vault is Ownable, ReentrancyGuard {
         */
 
         // Calculate Vault price before changing state
-        uint256 totalBalance = IERC20(i_usdcTokenAddress).balanceOf(address(this));
+        uint256 totalBalance = i_usdcTokenAddress.balanceOf(address(this));
         uint256 pricePool = totalBalance - s_treasury;
 
-        bool success = IERC20(i_usdcTokenAddress).transfer(s_winner, pricePool);
-        if (!success) {
-            revert Vault__TransferFailed();
-        }
+        i_usdcTokenAddress.safeTransfer(s_winner, pricePool);
 
         // s_vaultStatus = VaultStatus.OPEN;
 
@@ -167,10 +164,7 @@ contract Vault is Ownable, ReentrancyGuard {
         }
         
         // Transfer out the USDC.
-        bool success = IERC20(i_usdcTokenAddress).transfer(owner(), treasuryValue);
-        if(!success) {
-            revert Vault__TransferFailedToTreasury();
-        }
+        i_usdcTokenAddress.safeTransfer(owner(), treasuryValue);
 
         // Set the treasury back to 0
         s_treasury = 0;
